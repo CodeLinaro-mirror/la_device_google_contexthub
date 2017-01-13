@@ -90,9 +90,8 @@ class NanoHub {
     int mFd; // [0] is read end
     void * mMsgCbkData;
 
-    NanoHub() {
-        reset();
-    }
+    NanoHub();
+    ~NanoHub();
 
     void reset() {
         mThreadClosingPipe[0] = -1;
@@ -116,7 +115,7 @@ class NanoHub {
 
     int doSubscribeMessages(uint32_t hub_id, context_hub_callback *cbk, void *cookie);
     int doSendToNanohub(uint32_t hub_id, const hub_message_t *msg);
-    int doSendToDevice(const hub_app_name_t *name, const void *data, uint32_t len, uint32_t messageType);
+    int doSendToDevice(const hub_app_name_t name, const void *data, uint32_t len, uint32_t messageType);
     void doSendToApp(HubMessage &&msg);
 
     static constexpr unsigned int FL_MESSAGE_TRACING = 1;
@@ -149,7 +148,7 @@ public:
     }
     // passes message to kernel driver directly
     static int sendToDevice(const hub_app_name_t *name, const void *data, uint32_t len) {
-        return hubInstance()->doSendToDevice(name, data, len, 0);
+        return hubInstance()->doSendToDevice(*name, data, len, 0);
     }
     // passes message to APP via callback
     static void sendToApp(HubMessage &&msg) {
