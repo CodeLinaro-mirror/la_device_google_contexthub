@@ -116,6 +116,8 @@ static void processSingleAxisData(const struct SingleAxisDataEvent *src, uint32_
             if (i > 0)
                 byte.header.baseTimestamp += src->samples[i].deltaTime;
             byte.readings[0].isNear = src->samples[i].fdata == 0.0f;
+            byte.readings[0].invalid = false;
+            byte.readings[0].padding0 = 0;
 
             nanoappHandleEvent(CHRE_INSTANCE_ID, CHRE_EVENT_SENSOR_DATA_EVENT_BASE | sensorType, &byte);
         }
@@ -156,6 +158,8 @@ static void processEmbeddedData(const void *src, uint32_t sensorHandle, uint8_t 
         initDataHeader(&byte.header, eOsSensorGetTime(), sensorHandle);
         byte.readings[0].timestampDelta = 0;
         byte.readings[0].isNear = data.fdata == 0.0f;
+        byte.readings[0].invalid = false;
+        byte.readings[0].padding0 = 0;
 
         nanoappHandleEvent(CHRE_INSTANCE_ID, CHRE_EVENT_SENSOR_DATA_EVENT_BASE | sensorType, &byte);
         break;
@@ -181,7 +185,41 @@ static void chreappProcessSensorData(uint16_t evt, const void *eventData)
             processTripleAxisData(eventData, sensorHandle, SENSOR_TYPE(evt));
             break;
         }
+
+        if (SENSOR_TYPE(evt) == CHRE_SENSOR_TYPE_INSTANT_MOTION_DETECT
+            || SENSOR_TYPE(evt) == CHRE_SENSOR_TYPE_STATIONARY_DETECT) {
+            // one-shot, disable after receiving sample
+            chreSensorConfigure(sensorHandle, CHRE_SENSOR_CONFIGURE_MODE_DONE, CHRE_SENSOR_INTERVAL_DEFAULT, CHRE_SENSOR_LATENCY_DEFAULT);
+        }
     }
+}
+
+static void chreappProcessConfigEvt(uint16_t evt, const void *eventData)
+{
+    const struct SensorRateChangeEvent *msg = eventData;
+    struct chreSensorSamplingStatusEvent change;
+
+    change.sensorHandle = msg->sensorHandle;
+    if (!msg->newRate) {
+        change.status.enabled = 0;
+        change.status.interval = 0;
+        change.status.latency = 0;
+    } else {
+        change.status.enabled = true;
+        if (msg->newRate == SENSOR_RATE_ONDEMAND
+            || msg->newRate == SENSOR_RATE_ONCHANGE
+            || msg->newRate == SENSOR_RATE_ONESHOT)
+            change.status.interval = CHRE_SENSOR_INTERVAL_DEFAULT;
+        else
+            change.status.interval = (UINT32_C(1024000000) / msg->newRate) * UINT64_C(1000);
+
+        if (msg->newLatency == SENSOR_LATENCY_NODATA)
+            change.status.latency = CHRE_SENSOR_INTERVAL_DEFAULT;
+        else
+            change.status.latency = msg->newLatency;
+    }
+
+    nanoappHandleEvent(CHRE_INSTANCE_ID, CHRE_EVENT_SENSOR_SAMPLING_CHANGE, &change);
 }
 
 static void chreappHandle(uint32_t eventTypeAndTid, const void *eventData)
@@ -221,8 +259,9 @@ static void chreappHandle(uint32_t eventTypeAndTid, const void *eventData)
         if (evt < EVT_NO_FIRST_USER_EVENT)
             return;
         else if (evt > EVT_NO_FIRST_SENSOR_EVENT && evt < EVT_NO_SENSOR_CONFIG_EVENT) {
-            chreappProcessSensorData(evt, data);
-            return;
+            return chreappProcessSensorData(evt, data);
+        } else if (evt > EVT_NO_SENSOR_CONFIG_EVENT && evt < EVT_APP_START) {
+            return chreappProcessConfigEvt(evt, data);
         }
     }
     nanoappHandleEvent(srcTid, evt, data);

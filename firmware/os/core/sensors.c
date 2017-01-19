@@ -72,6 +72,20 @@ struct Sensor* sensorFindByHandle(uint32_t handle)
     return NULL;
 }
 
+static struct SensorsClientRequest* sensorClientRequestFind(uint32_t sensorHandle, uint32_t clientTid)
+{
+    uint32_t i;
+
+    for (i = 0; i < MAX_CLI_SENS_MATRIX_SZ; i++) {
+        struct SensorsClientRequest *req = slabAllocatorGetNth(mCliSensMatrix, i);
+
+        if (req && req->handle == sensorHandle && req->clientTid == clientTid)
+            return req;
+    }
+
+    return NULL;
+}
+
 static uint32_t sensorRegisterEx(const struct SensorInfo *si, TaggedPtr callInfo, void *callData, bool initComplete)
 {
     int32_t idx = atomicBitsetFindClearAndSet(mSensorsUsed);
@@ -446,6 +460,11 @@ static uint32_t sensorCalcHwRate(struct Sensor* s, uint32_t extraReqedRate, uint
     return SENSOR_RATE_IMPOSSIBLE;
 }
 
+static void sensorInternalEvtFreeF(void *evtP)
+{
+    slabAllocatorFree(mInternalEvents, evtP);
+}
+
 static void sensorInternalFwStateChanged(void *evtP)
 {
     struct SensorsInternalEvent *evt = (struct SensorsInternalEvent*)evtP;
@@ -485,6 +504,8 @@ static void sensorInternalPowerStateChanged(void *evtP)
         else if (s->currentRate == SENSOR_RATE_POWERING_OFF && !evt->value1) {   //we're now off
             s->currentRate = SENSOR_RATE_OFF;
             s->currentLatency = SENSOR_LATENCY_INVALID;
+            osEnqueueEvtOrFree(sensorGetMyCfgEventType(s->si->sensorType), evt, sensorInternalEvtFreeF);
+            return;
         }
         else if (s->currentRate == SENSOR_RATE_POWERING_ON && !evt->value1) {    //we need to power back on
             sensorCallFuncPower(s, true);
@@ -505,8 +526,10 @@ static void sensorInternalRateChanged(void *evtP)
     if (s && s->currentRate != SENSOR_RATE_OFF && s->currentRate < SENSOR_RATE_POWERING_ON) {
         s->currentRate = evt->value1;
         s->currentLatency = evt->value2;
+        osEnqueueEvtOrFree(sensorGetMyCfgEventType(s->si->sensorType), evt, sensorInternalEvtFreeF);
+    } else {
+        slabAllocatorFree(mInternalEvents, evt);
     }
-    slabAllocatorFree(mInternalEvents, evt);
 }
 
 bool sensorSignalInternalEvt(uint32_t handle, uint32_t intEvtNum, uint32_t value1, uint64_t value2)
@@ -565,59 +588,47 @@ static bool sensorAddRequestor(uint32_t sensorHandle, uint32_t clientTid, uint32
 
 static bool sensorGetCurRequestorRate(uint32_t sensorHandle, uint32_t clientTid, uint32_t *rateP, uint64_t *latencyP)
 {
-    uint32_t i;
+    struct SensorsClientRequest *req = sensorClientRequestFind(sensorHandle, clientTid);
 
-    for (i = 0; i < MAX_CLI_SENS_MATRIX_SZ; i++) {
-        struct SensorsClientRequest *req = slabAllocatorGetNth(mCliSensMatrix, i);
-
-        if (req && req->handle == sensorHandle && req->clientTid == clientTid) {
-            if (rateP) {
-                *rateP = req->rate;
-                *latencyP = req->latency;
-            }
-            return true;
-        }
+    if (req) {
+        if (rateP)
+            *rateP = req->rate;
+        if (*latencyP)
+            *latencyP = req->latency;
+        return true;
+    } else {
+        return false;
     }
-
-    return false;
 }
 
 static bool sensorAmendRequestor(uint32_t sensorHandle, uint32_t clientTid, uint32_t newRate, uint64_t newLatency)
 {
-    uint32_t i;
+    struct SensorsClientRequest *req = sensorClientRequestFind(sensorHandle, clientTid);
 
-    for (i = 0; i < MAX_CLI_SENS_MATRIX_SZ; i++) {
-        struct SensorsClientRequest *req = slabAllocatorGetNth(mCliSensMatrix, i);
-
-        if (req && req->handle == sensorHandle && req->clientTid == clientTid) {
-            req->rate = newRate;
-            req->latency = newLatency;
-            return true;
-        }
+    if (req) {
+        req->rate = newRate;
+        req->latency = newLatency;
+        return true;
+    } else {
+        return false;
     }
-
-    return false;
 }
 
 static bool sensorDeleteRequestor(uint32_t sensorHandle, uint32_t clientTid)
 {
-    uint32_t i;
+    struct SensorsClientRequest *req = sensorClientRequestFind(sensorHandle, clientTid);
 
-    for (i = 0; i < MAX_CLI_SENS_MATRIX_SZ; i++) {
-        struct SensorsClientRequest *req = slabAllocatorGetNth(mCliSensMatrix, i);
-
-        if (req && req->handle == sensorHandle && req->clientTid == clientTid) {
-            req->rate = SENSOR_RATE_OFF;
-            req->latency = SENSOR_LATENCY_INVALID;
-            req->clientTid = 0;
-            req->handle = 0;
-            mem_reorder_barrier();
-            slabAllocatorFree(mCliSensMatrix, req);
-            return true;
-        }
+    if (req) {
+        req->rate = SENSOR_RATE_OFF;
+        req->latency = SENSOR_LATENCY_INVALID;
+        req->clientTid = 0;
+        req->handle = 0;
+        mem_reorder_barrier();
+        slabAllocatorFree(mCliSensMatrix, req);
+        return true;
+    } else {
+        return false;
     }
-
-    return false;
 }
 
 bool sensorRequest(uint32_t unusedTid, uint32_t sensorHandle, uint32_t rate, uint64_t latency)
@@ -736,22 +747,16 @@ uint32_t sensorFreeAll(uint32_t clientTid)
 bool sensorTriggerOndemand(uint32_t unusedTid, uint32_t sensorHandle)
 {
     struct Sensor* s = sensorFindByHandle(sensorHandle);
-    uint32_t i;
-    uint32_t clientTid;
 
     (void)unusedTid;
 
     if (!s || !s->hasOndemand)
         return false;
 
-    clientTid = osGetCurrentTid();
+    struct SensorsClientRequest *req = sensorClientRequestFind(sensorHandle, osGetCurrentTid());
 
-    for (i = 0; i < MAX_CLI_SENS_MATRIX_SZ; i++) {
-        struct SensorsClientRequest *req = slabAllocatorGetNth(mCliSensMatrix, i);
-
-        if (req && req->handle == sensorHandle && req->clientTid == clientTid)
-            return sensorCallFuncTrigger(s);
-    }
+    if (req)
+        return sensorCallFuncTrigger(s);
 
     // not found -> do not report
     return false;
@@ -809,6 +814,20 @@ uint64_t sensorGetCurLatency(uint32_t sensorHandle)
     struct Sensor* s = sensorFindByHandle(sensorHandle);
 
     return s ? s->currentLatency : SENSOR_LATENCY_INVALID;
+}
+
+uint32_t sensorGetReqRate(uint32_t sensorHandle)
+{
+    struct SensorsClientRequest *req = sensorClientRequestFind(sensorHandle, osGetCurrentTid());
+
+    return req ? req->rate : SENSOR_RATE_OFF;
+}
+
+uint64_t sensorGetReqLatency(uint32_t sensorHandle)
+{
+    struct SensorsClientRequest *req = sensorClientRequestFind(sensorHandle, osGetCurrentTid());
+
+    return req ? req->latency : SENSOR_LATENCY_INVALID;
 }
 
 uint64_t sensorGetTime(void)
