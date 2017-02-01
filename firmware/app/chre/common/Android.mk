@@ -25,6 +25,7 @@ LOCAL_SRC_FILES :=      \
     chre_app.c          \
     chre_app_syscalls.c \
 
+LOCAL_STATIC_LIBRARIES += libnanobuiltins
 LOCAL_STATIC_LIBRARIES += libnanolibc
 
 include $(BUILD_NANOHUB_APP_STATIC_LIBRARY)
