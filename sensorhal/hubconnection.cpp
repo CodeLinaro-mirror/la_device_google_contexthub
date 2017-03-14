@@ -65,8 +65,6 @@
 #define MIN_MAG_SQ              (10.0f * 10.0f)
 #define MAX_MAG_SQ              (80.0f * 80.0f)
 
-#define ACCEL_RAW_KSCALE        (8.0f * 9.81f / 32768.0f)
-
 #define OS_LOG_EVENT            0x474F4C41  // ascii: ALOG
 
 #define HUBCONNECTION_SCHED_FIFO_PRIORITY 10
@@ -107,6 +105,8 @@ HubConnection::HubConnection()
     : Thread(false /* canCallJava */),
       mRing(10 *1024),
       mActivityEventHandler(NULL),
+      mScaleAccel(1.0f),
+      mScaleMag(1.0f),
       mStepCounterOffset(0ull),
       mLastStepCount(0ull)
 {
@@ -541,13 +541,13 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
     if (cnt > 0) {
         // If event is a wake event, protect it with a wakelock
         protectIfWakeEvent(sensor);
-        mRing.write(nev, cnt);
+        write(nev, cnt);
     }
 }
 
-void HubConnection::magAccuracyUpdate(float x, float y, float z)
+uint8_t HubConnection::magAccuracyUpdate(sensors_vec_t *sv)
 {
-    float magSq = x * x + y * y + z * z;
+    float magSq = sv->x * sv->x + sv->y * sv->y + sv->z * sv->z;
 
     if (magSq < MIN_MAG_SQ || magSq > MAX_MAG_SQ) {
         // save last good accuracy (either MEDIUM or HIGH)
@@ -558,6 +558,8 @@ void HubConnection::magAccuracyUpdate(float x, float y, float z)
         // restore
         mMagAccuracy = mMagAccuracyRestore;
     }
+
+    return mMagAccuracy;
 }
 
 void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t sensor, struct RawThreeAxisSample *sample, __attribute__((unused)) bool highAccuracy)
@@ -570,9 +572,9 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
     switch (sensor) {
     case COMMS_SENSOR_ACCEL:
         sv = &initEv(&nev[cnt], timestamp, type, sensor)->acceleration;
-        sv->x = sample->ix * ACCEL_RAW_KSCALE;
-        sv->y = sample->iy * ACCEL_RAW_KSCALE;
-        sv->z = sample->iz * ACCEL_RAW_KSCALE;
+        sv->x = sample->ix * mScaleAccel;
+        sv->y = sample->iy * mScaleAccel;
+        sv->z = sample->iz * mScaleAccel;
         sv->status = SENSOR_STATUS_ACCURACY_HIGH;
         sendDirectReportEvent(&nev[cnt], 1);
 
@@ -584,14 +586,37 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
             ue = &initEv(&nev[cnt++], timestamp,
                 SENSOR_TYPE_ACCELEROMETER_UNCALIBRATED,
                 COMMS_SENSOR_ACCEL_UNCALIBRATED)->uncalibrated_accelerometer;
-            ue->x_uncalib = sample->ix * ACCEL_RAW_KSCALE + mAccelBias[0];
-            ue->y_uncalib = sample->iy * ACCEL_RAW_KSCALE + mAccelBias[1];
-            ue->z_uncalib = sample->iz * ACCEL_RAW_KSCALE + mAccelBias[2];
+            ue->x_uncalib = sample->ix * mScaleAccel + mAccelBias[0];
+            ue->y_uncalib = sample->iy * mScaleAccel + mAccelBias[1];
+            ue->z_uncalib = sample->iz * mScaleAccel + mAccelBias[2];
             ue->x_bias = mAccelBias[0];
             ue->y_bias = mAccelBias[1];
             ue->z_bias = mAccelBias[2];
         }
         break;
+    case COMMS_SENSOR_MAG:
+        sv = &initEv(&nev[cnt], timestamp, type, sensor)->magnetic;
+        sv->x = sample->ix * mScaleMag;
+        sv->y = sample->iy * mScaleMag;
+        sv->z = sample->iz * mScaleMag;
+        sv->status = magAccuracyUpdate(sv);
+        sendDirectReportEvent(&nev[cnt], 1);
+
+        if (mSensorState[sensor].enable) {
+            ++cnt;
+        }
+
+        if (mSensorState[COMMS_SENSOR_MAG_UNCALIBRATED].enable) {
+            ue = &initEv(&nev[cnt++], timestamp,
+                SENSOR_TYPE_MAGNETIC_FIELD_UNCALIBRATED,
+                COMMS_SENSOR_MAG_UNCALIBRATED)->uncalibrated_magnetic;
+            ue->x_uncalib = sample->ix * mScaleMag + mMagBias[0];
+            ue->y_uncalib = sample->iy * mScaleMag + mMagBias[1];
+            ue->z_uncalib = sample->iz * mScaleMag + mMagBias[2];
+            ue->x_bias = mMagBias[0];
+            ue->y_bias = mMagBias[1];
+            ue->z_bias = mMagBias[2];
+        }
     default:
         break;
     }
@@ -599,7 +624,7 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
     if (cnt > 0) {
         // If event is a wake event, protect it with a wakelock
         protectIfWakeEvent(sensor);
-        mRing.write(nev, cnt);
+        write(nev, cnt);
     }
 }
 
@@ -675,13 +700,11 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
         saveSensorSettings();
         break;
     case COMMS_SENSOR_MAG:
-        magAccuracyUpdate(sample->x, sample->y, sample->z);
-
         sv = &initEv(&nev[cnt], timestamp, type, sensor)->magnetic;
         sv->x = sample->x;
         sv->y = sample->y;
         sv->z = sample->z;
-        sv->status = mMagAccuracy;
+        sv->status = magAccuracyUpdate(sv);
         sendDirectReportEvent(&nev[cnt], 1);
 
         if (mSensorState[sensor].enable) {
@@ -756,7 +779,7 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
     if (cnt > 0) {
         // If event is a wake event, protect it with a wakelock
         protectIfWakeEvent(sensor);
-        mRing.write(nev, cnt);
+        write(nev, cnt);
     }
 }
 
@@ -802,7 +825,7 @@ void HubConnection::restoreSensorState()
                   cmd.sensorType, i, mSensorState[i].enable, frequency_q10_to_period_ns(mSensorState[i].rate),
                   mSensorState[i].latency);
 
-            int ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+            int ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
             if (ret != sizeof(cmd)) {
                 ALOGE("failed to send config command to restore sensor %d\n", cmd.sensorType);
             }
@@ -810,7 +833,7 @@ void HubConnection::restoreSensorState()
             cmd.cmd = CONFIG_CMD_FLUSH;
 
             for (int j = 0; j < mSensorState[i].flushCnt; j++) {
-                int ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+                int ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
                 if (ret != sizeof(cmd)) {
                     ALOGE("failed to send flush command to sensor %d\n", cmd.sensorType);
                 }
@@ -890,6 +913,11 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
             sensor = COMMS_SENSOR_MAG;
             bias = COMMS_SENSOR_MAG_BIAS;
             three = true;
+            break;
+        case SENS_TYPE_TO_EVENT(SENS_TYPE_MAG_RAW):
+            type = SENSOR_TYPE_MAGNETIC_FIELD;
+            sensor = COMMS_SENSOR_MAG;
+            rawThree = true;
             break;
         case SENS_TYPE_TO_EVENT(SENS_TYPE_ALS):
             type = SENSOR_TYPE_LIGHT;
@@ -1147,7 +1175,7 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
                     ev.meta_data.sensor = sensor;
                 }
 
-                mRing.write(&ev, 1);
+                write(&ev, 1);
                 ALOGI("flushing %d", ev.meta_data.sensor);
             }
         }
@@ -1261,7 +1289,7 @@ bool HubConnection::threadLoop() {
             ::read(mPollFds[mDoubleTouchPollIndex].fd, buf, 16);
             sensors_event_t gestureEvent;
             initEv(&gestureEvent, elapsedRealtimeNano(), SENSOR_TYPE_PICK_UP_GESTURE, COMMS_SENSOR_GESTURE)->data[0] = 8;
-            mRing.write(&gestureEvent, 1);
+            write(&gestureEvent, 1);
         }
 #endif // DOUBLE_TOUCH_ENABLED
 
@@ -1342,7 +1370,7 @@ void HubConnection::queueActivate(int handle, bool enable)
 
         initConfigCmd(&cmd, handle);
 
-        ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+        ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd))
             ALOGI("queueActivate: sensor=%d, handle=%d, enable=%d",
                     cmd.sensorType, handle, enable);
@@ -1370,7 +1398,7 @@ void HubConnection::queueSetDelay(int handle, nsecs_t sampling_period_ns)
 
         initConfigCmd(&cmd, handle);
 
-        ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+        ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd))
             ALOGI("queueSetDelay: sensor=%d, handle=%d, period=%" PRId64,
                     cmd.sensorType, handle, sampling_period_ns);
@@ -1402,7 +1430,7 @@ void HubConnection::queueBatch(
 
         initConfigCmd(&cmd, handle);
 
-        ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+        ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd))
             ALOGI("queueBatch: sensor=%d, handle=%d, period=%" PRId64 ", latency=%" PRId64,
                     cmd.sensorType, handle, sampling_period_ns, max_report_latency_ns);
@@ -1428,7 +1456,7 @@ void HubConnection::queueFlush(int handle)
         initConfigCmd(&cmd, handle);
         cmd.cmd = CONFIG_CMD_FLUSH;
 
-        ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+        ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd)) {
             ALOGI("queueFlush: sensor=%d, handle=%d",
                     cmd.sensorType, handle);
@@ -1451,7 +1479,7 @@ void HubConnection::queueDataInternal(int handle, void *data, size_t length)
         memcpy(cmd->data, data, length);
         cmd->cmd = CONFIG_CMD_CFG_DATA;
 
-        ret = TEMP_FAILURE_RETRY(write(mFd, cmd, sizeof(*cmd) + length));
+        ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + length));
         if (ret == sizeof(*cmd) + length)
             ALOGI("queueData: sensor=%d, length=%zu",
                     cmd->sensorType, length);
@@ -1493,6 +1521,10 @@ void HubConnection::initNanohubLock() {
     }
 }
 
+ssize_t HubConnection::write(const sensors_event_t *ev, size_t n) {
+    return mRing.write(ev, n);
+}
+
 #ifdef USB_MAG_BIAS_REPORTING_ENABLED
 void HubConnection::queueUsbMagBias()
 {
@@ -1505,7 +1537,7 @@ void HubConnection::queueUsbMagBias()
         cmd->msg.dataLen = sizeof(float);
         memcpy((float *)(cmd+1), &mUsbMagBias, sizeof(float));
 
-        ret = TEMP_FAILURE_RETRY(write(mFd, cmd, sizeof(*cmd) + sizeof(float)));
+        ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + sizeof(float)));
         if (ret == sizeof(*cmd) + sizeof(float))
             ALOGI("queueUsbMagBias: bias=%f\n", mUsbMagBias);
         else
@@ -1545,7 +1577,7 @@ status_t HubConnection::initializeUinputNode()
     uidev.id.product = 0;
     uidev.id.version = 0;
 
-    ret = TEMP_FAILURE_RETRY(write(mUinputFd, &uidev, sizeof(uidev)));
+    ret = TEMP_FAILURE_RETRY(::write(mUinputFd, &uidev, sizeof(uidev)));
     if (ret < 0) {
         ALOGE("write to uinput node failed: %s", strerror(errno));
         return UNKNOWN_ERROR;
@@ -1569,7 +1601,7 @@ void HubConnection::sendFolioEvent(int32_t data) {
     ev.type = EV_SW;
     ev.code = SW_LID;
     ev.value =  data;
-    ret = TEMP_FAILURE_RETRY(write(mUinputFd, &ev, sizeof(ev)));
+    ret = TEMP_FAILURE_RETRY(::write(mUinputFd, &ev, sizeof(ev)));
     if (ret < 0) {
         ALOGE("write to uinput node failed: %s", strerror(errno));
         return;
@@ -1579,7 +1611,7 @@ void HubConnection::sendFolioEvent(int32_t data) {
     ev.type = EV_SYN;
     ev.code = SYN_REPORT;
     ev.value =  0;
-    ret = TEMP_FAILURE_RETRY(write(mUinputFd, &ev, sizeof(ev)));
+    ret = TEMP_FAILURE_RETRY(::write(mUinputFd, &ev, sizeof(ev)));
     if (ret < 0) {
         ALOGE("write to uinput node failed: %s", strerror(errno));
         return;
@@ -1655,21 +1687,24 @@ int HubConnection::addDirectChannel(const struct sensors_direct_mem_t *mem) {
 
     switch(mem->type) {
         case SENSOR_DIRECT_MEM_TYPE_ASHMEM:
-            ch = std::unique_ptr<DirectChannelBase>(new AshmemDirectChannel(mem));
-            if (ch) {
-                if (ch->isValid()) {
-                    Mutex::Autolock autoLock(mDirectChannelLock);
-                    ret = mDirectChannelHandle++;
-                    mDirectChannel.insert(std::make_pair(ret, std::move(ch)));
-                } else {
-                    ret = ch->getError();
-                    ALOGE("AshmemDirectChannel %p has error %d upon init", ch.get(), ret);
-                }
-            }
+            ch = std::make_unique<AshmemDirectChannel>(mem);
             break;
         case SENSOR_DIRECT_MEM_TYPE_GRALLOC:
+            ch = std::make_unique<GrallocDirectChannel>(mem);
+            break;
         default:
             ret = INVALID_OPERATION;
+    }
+
+    if (ch) {
+        if (ch->isValid()) {
+            Mutex::Autolock autoLock(mDirectChannelLock);
+            ret = mDirectChannelHandle++;
+            mDirectChannel.insert(std::make_pair(ret, std::move(ch)));
+        } else {
+            ret = ch->getError();
+            ALOGE("Direct channel object(type:%d) has error %d upon init", mem->type, ret);
+        }
     }
 
     return ret;
@@ -1725,7 +1760,7 @@ int HubConnection::stopAllDirectReportOnChannel(
         struct ConfigCmd cmd;
         initConfigCmd(&cmd, sensor_handle);
 
-        int result = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+        int result = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         ret = ret && (result == sizeof(cmd));
     }
     return ret ? NO_ERROR : BAD_VALUE;
@@ -1766,7 +1801,7 @@ int HubConnection::configDirectReport(int sensor_handle, int channel_handle, int
     struct ConfigCmd cmd;
     initConfigCmd(&cmd, sensor_handle);
 
-    int ret = TEMP_FAILURE_RETRY(write(mFd, &cmd, sizeof(cmd)));
+    int ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
 
     if (rate_level == SENSOR_DIRECT_RATE_STOP) {
         ret = NO_ERROR;

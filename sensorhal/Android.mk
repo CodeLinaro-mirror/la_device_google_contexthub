@@ -60,12 +60,9 @@ endif
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_OWNER := google
+LOCAL_PROPRIETARY_MODULE := true
 
 LOCAL_CFLAGS += $(COMMON_CFLAGS)
-
-ifeq ($(NANOHUB_SENSORHAL_DIRECT_REPORT_ENABLED), true)
-LOCAL_CFLAGS += -DDIRECT_REPORT_ENABLED
-endif
 
 LOCAL_C_INCLUDES += \
 	device/google/contexthub/firmware/os/inc \
@@ -82,6 +79,15 @@ LOCAL_SHARED_LIBRARIES := \
 	libstagefright_foundation \
 	libutils
 
+ifeq ($(NANOHUB_SENSORHAL_DIRECT_REPORT_ENABLED), true)
+LOCAL_CFLAGS += -DDIRECT_REPORT_ENABLED
+endif
+
+ifeq ($(NANOHUB_SENSORHAL_DYNAMIC_SENSOR_EXT_ENABLED), true)
+LOCAL_CFLAGS += -DDYNAMIC_SENSOR_EXT_ENABLED
+LOCAL_SHARED_LIBRARIES += libdynamic_sensor_ext
+endif
+
 include $(BUILD_SHARED_LIBRARY)
 
 ################################################################################
@@ -92,6 +98,7 @@ LOCAL_MODULE := activity_recognition.$(TARGET_DEVICE)
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_OWNER := google
+LOCAL_PROPRIETARY_MODULE := true
 
 LOCAL_CFLAGS += $(COMMON_CFLAGS)
 
@@ -118,6 +125,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libhubconnection
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_OWNER := google
+LOCAL_PROPRIETARY_MODULE := true
 
 LOCAL_CFLAGS += $(COMMON_CFLAGS)
 
@@ -149,6 +157,7 @@ LOCAL_STATIC_LIBRARIES := \
 
 LOCAL_SHARED_LIBRARIES := \
     libcutils \
+    libhardware \
     liblog \
     libstagefright_foundation \
     libhardware_legacy \
