@@ -24,7 +24,7 @@
 namespace android {
 
 #define CONTEXTHUB_SETTINGS_PATH        "/persist/sensorcal.json"
-#define CONTEXTHUB_SAVED_SETTINGS_PATH  "/data/misc/sensorcal_saved.json"
+#define CONTEXTHUB_SAVED_SETTINGS_PATH  "/data/vendor/sensor/sensorcal_saved.json"
 #define MAG_BIAS_FILE_PATH              "/sys/class/power_supply/battery/compass_compensation"
 
 static const uint32_t kMinClockRateHz = 960000;
@@ -83,6 +83,7 @@ enum comms_sensor_t {
     COMMS_SENSOR_GAZE                        = 45,
     COMMS_SENSOR_UNGAZE                      = 46,
     COMMS_SENSOR_ACCEL_UNCALIBRATED          = 47,
+    COMMS_SENSOR_HUMIDITY                    = 48,
 
     NUM_COMMS_SENSORS_PLUS_1,
 
