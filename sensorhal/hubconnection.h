@@ -27,6 +27,8 @@
 #include <utils/Mutex.h>
 #include <utils/Thread.h>
 
+#include <list>
+
 #include "activityeventhandler.h"
 #include "directchannel.h"
 #include "eventnums.h"
@@ -47,6 +49,8 @@
 #define GYRO_OTC_DATA_TAG  "gyro_otc"
 #define GYRO_SW_BIAS_TAG   "gyro_sw"
 #define MAG_BIAS_TAG       "mag"
+
+#define MAX_ALTERNATES     2
 
 namespace android {
 
@@ -92,6 +96,8 @@ struct HubConnection : public Thread {
         mScaleAccel = scaleAccel;
         mScaleMag = scaleMag;
     }
+
+    void setLeftyMode(bool enable);
 
 protected:
     HubConnection();
@@ -148,12 +154,29 @@ private:
         struct HostHubRawPacket msg;
     } __attribute__((packed));
 
+    struct LeftyState
+    {
+        bool accel; // Process wrist-aware accel samples as lefty mode
+        bool gyro; // Process wrist-aware gyro samples as lefty mode
+        bool hub; // Sensor hub is currently operating in lefty mode
+    };
+
+    struct Flush
+    {
+        int handle;
+        uint8_t count;
+
+        // Used to synchronize the transition in and out of
+        // lefty mode between nanohub and the AP.
+        bool internal;
+    };
+
     struct SensorState {
         uint64_t latency;
         rate_q10_t rate;
         uint8_t sensorType;
-        uint8_t alt;
-        uint8_t flushCnt;
+        uint8_t primary;
+        uint8_t alt[MAX_ALTERNATES];
         bool enable;
     };
 
@@ -231,7 +254,10 @@ private:
 
     float mScaleAccel, mScaleMag;
 
+    LeftyState mLefty;
+
     SensorState mSensorState[NUM_COMMS_SENSORS_PLUS_1];
+    std::list<struct Flush> mFlushesPending[NUM_COMMS_SENSORS_PLUS_1];
 
     uint64_t mStepCounterOffset;
     uint64_t mLastStepCount;
@@ -257,6 +283,8 @@ private:
     }
 
     void initConfigCmd(struct ConfigCmd *cmd, int handle);
+
+    void queueFlushInternal(int handle, bool internal);
 
     void queueDataInternal(int handle, void *data, size_t length);
 
