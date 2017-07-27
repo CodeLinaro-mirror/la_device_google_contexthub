@@ -52,6 +52,9 @@
 #define APP_ID_MAKE(vendor, app)       ((((uint64_t)(vendor)) << 24) | ((app) & 0x00FFFFFF))
 #define APP_ID_VENDOR_GOOGLE           0x476f6f676cULL // "Googl"
 #define APP_ID_APP_BMI160              2
+#define APP_ID_APP_WRIST_TILT_DETECT   0x1005
+#define APP_ID_APP_GAZE_DETECT         0x1009
+#define APP_ID_APP_UNGAZE_DETECT       0x100a
 
 #define SENS_TYPE_TO_EVENT(_sensorType) (EVT_NO_FIRST_SENSOR_EVENT + (_sensorType))
 
@@ -125,6 +128,10 @@ HubConnection::HubConnection()
     mAccelBias[0] = mAccelBias[1] = mAccelBias[2] = 0.0f;
     memset(&mGyroOtcData, 0, sizeof(mGyroOtcData));
 
+    mLefty.accel = false;
+    mLefty.gyro = false;
+    mLefty.hub = false;
+
     memset(&mSensorState, 0x00, sizeof(mSensorState));
     mFd = open(NANOHUB_FILE_PATH, O_RDWR);
     mPollFds[0].fd = mFd;
@@ -167,17 +174,32 @@ HubConnection::HubConnection()
 #endif  // DOUBLE_TOUCH_ENABLED
 
     mSensorState[COMMS_SENSOR_ACCEL].sensorType = SENS_TYPE_ACCEL;
-    mSensorState[COMMS_SENSOR_ACCEL].alt = COMMS_SENSOR_ACCEL_UNCALIBRATED;
+    mSensorState[COMMS_SENSOR_ACCEL].alt[0] = COMMS_SENSOR_ACCEL_UNCALIBRATED;
+    mSensorState[COMMS_SENSOR_ACCEL].alt[1] = COMMS_SENSOR_ACCEL_WRIST_AWARE;
     mSensorState[COMMS_SENSOR_ACCEL_UNCALIBRATED].sensorType = SENS_TYPE_ACCEL;
-    mSensorState[COMMS_SENSOR_ACCEL_UNCALIBRATED].alt = COMMS_SENSOR_ACCEL;
+    mSensorState[COMMS_SENSOR_ACCEL_UNCALIBRATED].primary = COMMS_SENSOR_ACCEL;
+    mSensorState[COMMS_SENSOR_ACCEL_UNCALIBRATED].alt[0] = COMMS_SENSOR_ACCEL;
+    mSensorState[COMMS_SENSOR_ACCEL_UNCALIBRATED].alt[1] = COMMS_SENSOR_ACCEL_WRIST_AWARE;
+    mSensorState[COMMS_SENSOR_ACCEL_WRIST_AWARE].sensorType = SENS_TYPE_ACCEL;
+    mSensorState[COMMS_SENSOR_ACCEL_WRIST_AWARE].primary = COMMS_SENSOR_ACCEL;
+    mSensorState[COMMS_SENSOR_ACCEL_WRIST_AWARE].alt[0] = COMMS_SENSOR_ACCEL;
+    mSensorState[COMMS_SENSOR_ACCEL_WRIST_AWARE].alt[1] = COMMS_SENSOR_ACCEL_UNCALIBRATED;
     mSensorState[COMMS_SENSOR_GYRO].sensorType = SENS_TYPE_GYRO;
-    mSensorState[COMMS_SENSOR_GYRO].alt = COMMS_SENSOR_GYRO_UNCALIBRATED;
+    mSensorState[COMMS_SENSOR_GYRO].alt[0] = COMMS_SENSOR_GYRO_UNCALIBRATED;
+    mSensorState[COMMS_SENSOR_GYRO].alt[1] = COMMS_SENSOR_GYRO_WRIST_AWARE;
     mSensorState[COMMS_SENSOR_GYRO_UNCALIBRATED].sensorType = SENS_TYPE_GYRO;
-    mSensorState[COMMS_SENSOR_GYRO_UNCALIBRATED].alt = COMMS_SENSOR_GYRO;
+    mSensorState[COMMS_SENSOR_GYRO_UNCALIBRATED].primary = COMMS_SENSOR_GYRO;
+    mSensorState[COMMS_SENSOR_GYRO_UNCALIBRATED].alt[0] = COMMS_SENSOR_GYRO;
+    mSensorState[COMMS_SENSOR_GYRO_UNCALIBRATED].alt[1] = COMMS_SENSOR_GYRO_WRIST_AWARE;
+    mSensorState[COMMS_SENSOR_GYRO_WRIST_AWARE].sensorType = SENS_TYPE_GYRO;
+    mSensorState[COMMS_SENSOR_GYRO_WRIST_AWARE].primary = COMMS_SENSOR_GYRO;
+    mSensorState[COMMS_SENSOR_GYRO_WRIST_AWARE].alt[0] = COMMS_SENSOR_GYRO;
+    mSensorState[COMMS_SENSOR_GYRO_WRIST_AWARE].alt[1] = COMMS_SENSOR_GYRO_UNCALIBRATED;
     mSensorState[COMMS_SENSOR_MAG].sensorType = SENS_TYPE_MAG;
-    mSensorState[COMMS_SENSOR_MAG].alt = COMMS_SENSOR_MAG_UNCALIBRATED;
+    mSensorState[COMMS_SENSOR_MAG].alt[0] = COMMS_SENSOR_MAG_UNCALIBRATED;
     mSensorState[COMMS_SENSOR_MAG_UNCALIBRATED].sensorType = SENS_TYPE_MAG;
-    mSensorState[COMMS_SENSOR_MAG_UNCALIBRATED].alt = COMMS_SENSOR_MAG;
+    mSensorState[COMMS_SENSOR_MAG_UNCALIBRATED].primary = COMMS_SENSOR_MAG;
+    mSensorState[COMMS_SENSOR_MAG_UNCALIBRATED].alt[0] = COMMS_SENSOR_MAG;
     mSensorState[COMMS_SENSOR_LIGHT].sensorType = SENS_TYPE_ALS;
     mSensorState[COMMS_SENSOR_PROXIMITY].sensorType = SENS_TYPE_PROX;
     mSensorState[COMMS_SENSOR_PRESSURE].sensorType = SENS_TYPE_BARO;
@@ -244,7 +266,7 @@ HubConnection::HubConnection()
 
     // set initial lid state
     if (property_set(LID_STATE_PROPERTY, LID_STATE_UNKNOWN) < 0) {
-        ALOGE("could not set lid_state property");
+        ALOGW("could not set lid_state property");
     }
 
     // enable hall sensor for folio
@@ -271,7 +293,7 @@ void HubConnection::onFirstRef()
     run("HubConnection", PRIORITY_URGENT_DISPLAY);
 #ifdef USE_SENSORSERVICE_TO_GET_FIFO
     if (property_get_bool(SCHED_FIFO_PRIOIRTY, true)) {
-        ALOGI("Try activate sched-fifo priority for HubConnection thread");
+        ALOGV("Try activate sched-fifo priority for HubConnection thread");
         mEnableSchedFifoThread = std::thread(enableSchedFifoMode, this);
     }
 #else
@@ -290,18 +312,18 @@ void HubConnection::enableSchedFifoMode(sp<HubConnection> hub) {
     sp<ISchedulingPolicyService> scheduler = ISchedulingPolicyService::getService();
 
     if (scheduler == nullptr) {
-        ALOGE("Couldn't get scheduler scheduler to set SCHED_FIFO.");
+        ALOGW("Couldn't get scheduler scheduler to set SCHED_FIFO.");
     } else {
         Return<int32_t> max = scheduler->getMaxAllowedPriority();
         if (!max.isOk()) {
-            ALOGE("Failed to retrieve maximum allowed priority for HubConnection.");
+            ALOGW("Failed to retrieve maximum allowed priority for HubConnection.");
             return;
         }
         Return<bool> ret = scheduler->requestPriority(::getpid(), hub->getTid(), max);
         if (!ret.isOk() || !ret) {
-            ALOGE("Failed to set SCHED_FIFO for HubConnection.");
+            ALOGW("Failed to set SCHED_FIFO for HubConnection.");
         } else {
-            ALOGI("Enabled sched fifo thread mode (prio %d)", static_cast<int32_t>(max));
+            ALOGV("Enabled sched fifo thread mode (prio %d)", static_cast<int32_t>(max));
         }
     }
 #else
@@ -309,7 +331,7 @@ void HubConnection::enableSchedFifoMode(sp<HubConnection> hub) {
     struct sched_param param = {0};
     param.sched_priority = HUBCONNECTION_SCHED_FIFO_PRIORITY;
     if (sched_setscheduler(hub->getTid(), SCHED_FIFO | SCHED_RESET_ON_FORK, &param) != 0) {
-        ALOGE("Couldn't set SCHED_FIFO for HubConnection thread");
+        ALOGW("Couldn't set SCHED_FIFO for HubConnection thread");
     }
 #endif
 }
@@ -421,7 +443,7 @@ static void loadSensorSettings(sp<JSONObject>* settings,
 
     status_t err;
     if ((err = settings_file.initCheck()) != OK) {
-        ALOGE("settings file open failed: %d (%s)",
+        ALOGW("settings file open failed: %d (%s)",
               err,
               strerror(-err));
 
@@ -431,7 +453,7 @@ static void loadSensorSettings(sp<JSONObject>* settings,
     }
 
     if ((err = saved_settings_file.initCheck()) != OK) {
-        ALOGE("saved settings file open failed: %d (%s)",
+        ALOGW("saved settings file open failed: %d (%s)",
               err,
               strerror(-err));
         *saved_settings = new JSONObject;
@@ -446,7 +468,7 @@ void HubConnection::saveSensorSettings() const {
 
     status_t err;
     if ((err = saved_settings_file.initCheck()) != OK) {
-        ALOGE("saved settings file open failed %d (%s)",
+        ALOGW("saved settings file open failed %d (%s)",
               err,
               strerror(-err));
         return;
@@ -491,10 +513,66 @@ void HubConnection::saveSensorSettings() const {
     AString serializedSettings = settingsObject->toString();
     size_t size = serializedSettings.size();
     if ((err = saved_settings_file.write(serializedSettings.c_str(), size)) != (ssize_t)size) {
-        ALOGE("saved settings file write failed %d (%s)",
+        ALOGW("saved settings file write failed %d (%s)",
               err,
               strerror(-err));
     }
+}
+
+void HubConnection::setLeftyMode(bool enable) {
+    struct MsgCmd *cmd;
+    size_t ret;
+
+    Mutex::Autolock autoLock(mLock);
+
+    if (enable == mLefty.hub) return;
+
+    cmd = (struct MsgCmd *)malloc(sizeof(struct MsgCmd) + sizeof(bool));
+
+    if (cmd) {
+        cmd->evtType = EVT_APP_FROM_HOST;
+        cmd->msg.appId = APP_ID_MAKE(APP_ID_VENDOR_GOOGLE, APP_ID_APP_GAZE_DETECT);
+        cmd->msg.dataLen = sizeof(bool);
+        memcpy((bool *)(cmd+1), &enable, sizeof(bool));
+
+        ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + sizeof(bool)));
+        if (ret == sizeof(*cmd) + sizeof(bool))
+            ALOGV("setLeftyMode: lefty (gaze) = %s\n",
+                  (enable ? "true" : "false"));
+        else
+            ALOGE("setLeftyMode: failed to send command lefty (gaze) = %s\n",
+                  (enable ? "true" : "false"));
+
+        cmd->msg.appId = APP_ID_MAKE(APP_ID_VENDOR_GOOGLE, APP_ID_APP_UNGAZE_DETECT);
+
+        ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + sizeof(bool)));
+        if (ret == sizeof(*cmd) + sizeof(bool))
+            ALOGV("setLeftyMode: lefty (ungaze) = %s\n",
+                  (enable ? "true" : "false"));
+        else
+            ALOGE("setLeftyMode: failed to send command lefty (ungaze) = %s\n",
+                  (enable ? "true" : "false"));
+
+        cmd->msg.appId = APP_ID_MAKE(APP_ID_VENDOR_GOOGLE, APP_ID_APP_WRIST_TILT_DETECT);
+
+        ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + sizeof(bool)));
+        if (ret == sizeof(*cmd) + sizeof(bool))
+            ALOGV("setLeftyMode: lefty (tilt) = %s\n",
+                  (enable ? "true" : "false"));
+        else
+            ALOGE("setLeftyMode: failed to send command lefty (tilt) = %s\n",
+                  (enable ? "true" : "false"));
+
+        free(cmd);
+    } else {
+        ALOGE("setLeftyMode: failed to allocate command\n");
+        return;
+    }
+
+    queueFlushInternal(COMMS_SENSOR_ACCEL_WRIST_AWARE, true);
+    queueFlushInternal(COMMS_SENSOR_GYRO_WRIST_AWARE, true);
+
+    mLefty.hub = enable;
 }
 
 sensors_event_t *HubConnection::initEv(sensors_event_t *ev, uint64_t timestamp, uint32_t type, uint32_t sensor)
@@ -648,7 +726,7 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
 {
     sensors_vec_t *sv;
     uncalibrated_event_t *ue;
-    sensors_event_t nev[2];
+    sensors_event_t nev[3];
     int cnt = 0;
 
     switch (sensor) {
@@ -674,6 +752,16 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
             ue->x_bias = mAccelBias[0];
             ue->y_bias = mAccelBias[1];
             ue->z_bias = mAccelBias[2];
+        }
+
+        if (mSensorState[COMMS_SENSOR_ACCEL_WRIST_AWARE].enable) {
+            sv = &initEv(&nev[cnt++], timestamp,
+                SENSOR_TYPE_ACCELEROMETER_WRIST_AWARE,
+                COMMS_SENSOR_ACCEL_WRIST_AWARE)->acceleration;
+            sv->x = sample->ix * mScaleAccel;
+            sv->y = (mLefty.accel ? -sample->iy : sample->iy) * mScaleAccel;
+            sv->z = sample->iz * mScaleAccel;
+            sv->status = SENSOR_STATUS_ACCURACY_HIGH;
         }
         break;
     case COMMS_SENSOR_MAG:
@@ -715,7 +803,7 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
     sensors_vec_t *sv;
     uncalibrated_event_t *ue;
     sensors_event_t *ev;
-    sensors_event_t nev[2];
+    sensors_event_t nev[3];
     static const float heading_accuracy = M_PI / 6.0f;
     float w;
     int cnt = 0;
@@ -744,6 +832,16 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
             ue->y_bias = mAccelBias[1];
             ue->z_bias = mAccelBias[2];
         }
+
+        if (mSensorState[COMMS_SENSOR_ACCEL_WRIST_AWARE].enable) {
+            sv = &initEv(&nev[cnt++], timestamp,
+                SENSOR_TYPE_ACCELEROMETER_WRIST_AWARE,
+                COMMS_SENSOR_ACCEL_WRIST_AWARE)->acceleration;
+            sv->x = sample->x;
+            sv->y = (mLefty.accel ? -sample->y : sample->y);
+            sv->z = sample->z;
+            sv->status = SENSOR_STATUS_ACCURACY_HIGH;
+        }
         break;
     case COMMS_SENSOR_GYRO:
         sv = &initEv(&nev[cnt], timestamp, type, sensor)->gyro;
@@ -767,6 +865,16 @@ void HubConnection::processSample(uint64_t timestamp, uint32_t type, uint32_t se
             ue->x_bias = mGyroBias[0];
             ue->y_bias = mGyroBias[1];
             ue->z_bias = mGyroBias[2];
+        }
+
+        if (mSensorState[COMMS_SENSOR_GYRO_WRIST_AWARE].enable) {
+            sv = &initEv(&nev[cnt++], timestamp,
+                SENSOR_TYPE_GYROSCOPE_WRIST_AWARE,
+                COMMS_SENSOR_GYRO_WRIST_AWARE)->gyro;
+            sv->x = (mLefty.gyro ? -sample->x : sample->x);
+            sv->y = sample->y;
+            sv->z = (mLefty.gyro ? -sample->z : sample->z);
+            sv->status = SENSOR_STATUS_ACCURACY_HIGH;
         }
         break;
     case COMMS_SENSOR_ACCEL_BIAS:
@@ -871,7 +979,7 @@ void HubConnection::discardInotifyEvent() {
     if (mInotifyPollIndex >= 0) {
         char buf[sizeof(struct inotify_event) + NAME_MAX + 1];
         int ret = ::read(mPollFds[mInotifyPollIndex].fd, buf, sizeof(buf));
-        ALOGD("Discarded %d bytes of inotify data", ret);
+        ALOGV("Discarded %d bytes of inotify data", ret);
     }
 }
 
@@ -903,21 +1011,23 @@ void HubConnection::restoreSensorState()
 
             initConfigCmd(&cmd, i);
 
-            ALOGI("restoring: sensor=%d, handle=%d, enable=%d, period=%" PRId64 ", latency=%" PRId64,
+            ALOGV("restoring: sensor=%d, handle=%d, enable=%d, period=%" PRId64 ", latency=%" PRId64,
                   cmd.sensorType, i, mSensorState[i].enable, frequency_q10_to_period_ns(mSensorState[i].rate),
                   mSensorState[i].latency);
 
             int ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
             if (ret != sizeof(cmd)) {
-                ALOGE("failed to send config command to restore sensor %d\n", cmd.sensorType);
+                ALOGW("failed to send config command to restore sensor %d\n", cmd.sensorType);
             }
 
             cmd.cmd = CONFIG_CMD_FLUSH;
 
-            for (int j = 0; j < mSensorState[i].flushCnt; j++) {
-                int ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
-                if (ret != sizeof(cmd)) {
-                    ALOGE("failed to send flush command to sensor %d\n", cmd.sensorType);
+            for (auto iter = mFlushesPending[i].cbegin(); iter != mFlushesPending[i].cend(); ++iter) {
+                for (int j = 0; j < iter->count; j++) {
+                    int ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
+                    if (ret != sizeof(cmd)) {
+                        ALOGW("failed to send flush command to sensor %d\n", cmd.sensorType);
+                    }
                 }
             }
         }
@@ -950,6 +1060,9 @@ void HubConnection::postOsLog(uint8_t *buf, ssize_t len)
     case 'D':
         ALOGD("osLog: %s", &buf[5]);
         break;
+    case 'V':
+        ALOGV("osLog: %s", &buf[5]);
+        break;
     default:
         break;
     }
@@ -962,21 +1075,21 @@ void HubConnection::processAppData(uint8_t *buf, ssize_t len) {
     AppToSensorHalDataPayload *data =
             &(reinterpret_cast<AppToSensorHalDataBuffer *>(buf)->payload);
     if (data->size + sizeof(AppToSensorHalDataBuffer) != len) {
-        ALOGE("Received corrupted data update packet, len %zd, size %u", len, data->size);
+        ALOGW("Received corrupted data update packet, len %zd, size %u", len, data->size);
         return;
     }
 
     switch (data->type & APP_TO_SENSOR_HAL_TYPE_MASK) {
     case HALINTF_TYPE_GYRO_OTC_DATA:
         if (data->size != sizeof(GyroOtcData)) {
-            ALOGE("Corrupted HALINTF_TYPE_GYRO_OTC_DATA with size %u", data->size);
+            ALOGW("Corrupted HALINTF_TYPE_GYRO_OTC_DATA with size %u", data->size);
             return;
         }
         mGyroOtcData = data->gyroOtcData[0];
         saveSensorSettings();
         break;
     default:
-        ALOGE("Unknown app to hal data type 0x%04x", data->type);
+        ALOGW("Unknown app to hal data type 0x%04x", data->type);
         break;
     }
 }
@@ -990,6 +1103,7 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
     sensors_event_t ev;
     uint64_t timestamp;
     ssize_t ret = 0;
+    uint32_t primary;
 
     if (len >= sizeof(data->evtType)) {
         ret = sizeof(data->evtType);
@@ -1219,11 +1333,11 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
             restoreSensorState();
             return 0;
         default:
-            ALOGE("unknown evtType: 0x%08x len: %zu\n", data->evtType, len);
+            ALOGW("unknown evtType: 0x%08x len: %zu\n", data->evtType, len);
             return -1;
         }
     } else {
-        ALOGE("too little data: len=%zu\n", len);
+        ALOGW("too little data: len=%zu\n", len);
         return -1;
     }
 
@@ -1239,7 +1353,7 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
 
             if (one) {
                 if (ret + sizeof(data->oneSamples[i]) > len) {
-                    ALOGE("sensor %d (one): ret=%zd, numSamples=%d, i=%d\n", currSensor, ret, numSamples, i);
+                    ALOGW("sensor %d (one): ret=%zd, numSamples=%d, i=%d\n", currSensor, ret, numSamples, i);
                     return -1;
                 }
                 if (i > 0)
@@ -1248,7 +1362,7 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
                 ret += sizeof(data->oneSamples[i]);
             } else if (rawThree) {
                 if (ret + sizeof(data->rawThreeSamples[i]) > len) {
-                    ALOGE("sensor %d (rawThree): ret=%zd, numSamples=%d, i=%d\n", currSensor, ret, numSamples, i);
+                    ALOGW("sensor %d (rawThree): ret=%zd, numSamples=%d, i=%d\n", currSensor, ret, numSamples, i);
                     return -1;
                 }
                 if (i > 0)
@@ -1257,7 +1371,7 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
                 ret += sizeof(data->rawThreeSamples[i]);
             } else if (three) {
                 if (ret + sizeof(data->threeSamples[i]) > len) {
-                    ALOGE("sensor %d (three): ret=%zd, numSamples=%d, i=%d\n", currSensor, ret, numSamples, i);
+                    ALOGW("sensor %d (three): ret=%zd, numSamples=%d, i=%d\n", currSensor, ret, numSamples, i);
                     return -1;
                 }
                 if (i > 0)
@@ -1265,7 +1379,7 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
                 processSample(timestamp, type, currSensor, &data->threeSamples[i], data->firstSample.highAccuracy);
                 ret += sizeof(data->threeSamples[i]);
             } else {
-                ALOGE("sensor %d (unknown): cannot processSample\n", currSensor);
+                ALOGW("sensor %d (unknown): cannot processSample\n", currSensor);
                 return -1;
             }
         }
@@ -1273,30 +1387,40 @@ ssize_t HubConnection::processBuf(uint8_t *buf, size_t len)
         if (!numSamples)
             ret += sizeof(data->firstSample);
 
+        // If no primary sensor type is specified,
+        // then 'sensor' is the primary sensor type.
+        primary = mSensorState[sensor].primary;
+        primary = (primary ? primary : sensor);
+
         for (i=0; i<data->firstSample.numFlushes; i++) {
             if (isActivitySensor(sensor) && mActivityEventHandler != NULL) {
                 mActivityEventHandler->OnFlush();
             } else {
+                struct Flush& flush = mFlushesPending[primary].front();
                 memset(&ev, 0x00, sizeof(sensors_event_t));
                 ev.version = META_DATA_VERSION;
                 ev.timestamp = 0;
                 ev.type = SENSOR_TYPE_META_DATA;
                 ev.sensor = 0;
                 ev.meta_data.what = META_DATA_FLUSH_COMPLETE;
-                if (mSensorState[sensor].alt && mSensorState[mSensorState[sensor].alt].flushCnt > 0) {
-                    mSensorState[mSensorState[sensor].alt].flushCnt --;
-                    ev.meta_data.sensor = mSensorState[sensor].alt;
-                } else {
-                    mSensorState[sensor].flushCnt --;
-                    ev.meta_data.sensor = sensor;
-                }
+                ev.meta_data.sensor = flush.handle;
 
-                write(&ev, 1);
-                ALOGI("flushing %d", ev.meta_data.sensor);
+                if (flush.internal) {
+                    if (flush.handle == COMMS_SENSOR_ACCEL_WRIST_AWARE)
+                        mLefty.accel = !mLefty.accel;
+                    else if (flush.handle == COMMS_SENSOR_GYRO_WRIST_AWARE)
+                        mLefty.gyro = !mLefty.gyro;
+                } else
+                    write(&ev, 1);
+
+                if (--flush.count == 0)
+                    mFlushesPending[primary].pop_front();
+
+                ALOGV("flushing %d", ev.meta_data.sensor);
             }
         }
     } else {
-        ALOGE("too little data for sensor %d: len=%zu\n", sensor, len);
+        ALOGW("too little data for sensor %d: len=%zu\n", sensor, len);
         return -1;
     }
 
@@ -1329,7 +1453,7 @@ void HubConnection::sendCalibrationOffsets()
         queueDataInternal(COMMS_SENSOR_ACCEL, &accel, sizeof(accel));
     }
 
-    ALOGI("Use new configuration format");
+    ALOGV("Use new configuration format");
     std::vector<int32_t> hardwareGyroBias = getInt32Setting(settings, GYRO_BIAS_TAG);
     std::vector<float> softwareGyroBias = getFloatSetting(saved_settings, GYRO_SW_BIAS_TAG);
     if (hardwareGyroBias.size() == 3 || softwareGyroBias.size() == 3) {
@@ -1375,7 +1499,7 @@ void HubConnection::sendCalibrationOffsets()
         // send it to hub
         queueDataInternal(COMMS_SENSOR_GYRO, &packet, sizeof(packet));
     } else {
-        ALOGE("Illegal otc_gyro data size = %zu", gyroOtcData.size());
+        ALOGW("Illegal otc_gyro data size = %zu", gyroOtcData.size());
     }
 
     std::vector<float> magBiasData = getFloatSetting(saved_settings, MAG_BIAS_TAG);
@@ -1412,10 +1536,10 @@ void HubConnection::sendCalibrationOffsets()
 }
 
 bool HubConnection::threadLoop() {
-    ALOGI("threadLoop: starting");
+    ALOGV("threadLoop: starting");
 
     if (mFd < 0) {
-        ALOGE("threadLoop: exiting prematurely: nanohub is unavailable");
+        ALOGW("threadLoop: exiting prematurely: nanohub is unavailable");
         return false;
     }
     waitOnNanohubLock();
@@ -1472,7 +1596,7 @@ bool HubConnection::threadLoop() {
                         break;
                 }
             } else {
-                ALOGE("read -1: errno=%d\n", errno);
+                ALOGW("read -1: errno=%d\n", errno);
             }
         }
     }
@@ -1492,31 +1616,28 @@ void HubConnection::setActivityCallback(ActivityEventHandler *eventHandler)
 
 void HubConnection::initConfigCmd(struct ConfigCmd *cmd, int handle)
 {
-    uint8_t alt = mSensorState[handle].alt;
-
     memset(cmd, 0x00, sizeof(*cmd));
 
     cmd->evtType = EVT_NO_SENSOR_CONFIG_EVENT;
     cmd->sensorType = mSensorState[handle].sensorType;
+    cmd->cmd = mSensorState[handle].enable ? CONFIG_CMD_ENABLE : CONFIG_CMD_DISABLE;
+    cmd->rate = mSensorState[handle].rate;
+    cmd->latency = mSensorState[handle].latency;
 
-    if (alt && mSensorState[alt].enable && mSensorState[handle].enable) {
+    for (int i=0; i<MAX_ALTERNATES; ++i) {
+        uint8_t alt = mSensorState[handle].alt[i];
+
+        if (alt == COMMS_SENSOR_INVALID) continue;
+        if (!mSensorState[alt].enable) continue;
+
         cmd->cmd = CONFIG_CMD_ENABLE;
-        if (mSensorState[alt].rate > mSensorState[handle].rate)
+
+        if (mSensorState[alt].rate > cmd->rate) {
             cmd->rate = mSensorState[alt].rate;
-        else
-            cmd->rate = mSensorState[handle].rate;
-        if (mSensorState[alt].latency < mSensorState[handle].latency)
+        }
+        if (mSensorState[alt].latency < cmd->latency) {
             cmd->latency = mSensorState[alt].latency;
-        else
-            cmd->latency = mSensorState[handle].latency;
-    } else if (alt && mSensorState[alt].enable) {
-        cmd->cmd = mSensorState[alt].enable ? CONFIG_CMD_ENABLE : CONFIG_CMD_DISABLE;
-        cmd->rate = mSensorState[alt].rate;
-        cmd->latency = mSensorState[alt].latency;
-    } else { /* !alt || !mSensorState[alt].enable */
-        cmd->cmd = mSensorState[handle].enable ? CONFIG_CMD_ENABLE : CONFIG_CMD_DISABLE;
-        cmd->rate = mSensorState[handle].rate;
-        cmd->latency = mSensorState[handle].latency;
+        }
     }
 
     // will be a nop if direct report mode is not enabled
@@ -1537,13 +1658,13 @@ void HubConnection::queueActivate(int handle, bool enable)
 
         ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd))
-            ALOGI("queueActivate: sensor=%d, handle=%d, enable=%d",
+            ALOGV("queueActivate: sensor=%d, handle=%d, enable=%d",
                     cmd.sensorType, handle, enable);
         else
-            ALOGE("queueActivate: failed to send command: sensor=%d, handle=%d, enable=%d",
+            ALOGW("queueActivate: failed to send command: sensor=%d, handle=%d, enable=%d",
                     cmd.sensorType, handle, enable);
     } else {
-        ALOGI("queueActivate: unhandled handle=%d, enable=%d", handle, enable);
+        ALOGV("queueActivate: unhandled handle=%d, enable=%d", handle, enable);
     }
 }
 
@@ -1565,13 +1686,13 @@ void HubConnection::queueSetDelay(int handle, nsecs_t sampling_period_ns)
 
         ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd))
-            ALOGI("queueSetDelay: sensor=%d, handle=%d, period=%" PRId64,
+            ALOGV("queueSetDelay: sensor=%d, handle=%d, period=%" PRId64,
                     cmd.sensorType, handle, sampling_period_ns);
         else
-            ALOGE("queueSetDelay: failed to send command: sensor=%d, handle=%d, period=%" PRId64,
+            ALOGW("queueSetDelay: failed to send command: sensor=%d, handle=%d, period=%" PRId64,
                     cmd.sensorType, handle, sampling_period_ns);
     } else {
-        ALOGI("queueSetDelay: unhandled handle=%d, period=%" PRId64, handle, sampling_period_ns);
+        ALOGV("queueSetDelay: unhandled handle=%d, period=%" PRId64, handle, sampling_period_ns);
     }
 }
 
@@ -1597,40 +1718,58 @@ void HubConnection::queueBatch(
 
         ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd))
-            ALOGI("queueBatch: sensor=%d, handle=%d, period=%" PRId64 ", latency=%" PRId64,
+            ALOGV("queueBatch: sensor=%d, handle=%d, period=%" PRId64 ", latency=%" PRId64,
                     cmd.sensorType, handle, sampling_period_ns, max_report_latency_ns);
         else
-            ALOGE("queueBatch: failed to send command: sensor=%d, handle=%d, period=%" PRId64 ", latency=%" PRId64,
+            ALOGW("queueBatch: failed to send command: sensor=%d, handle=%d, period=%" PRId64 ", latency=%" PRId64,
                     cmd.sensorType, handle, sampling_period_ns, max_report_latency_ns);
     } else {
-        ALOGI("queueBatch: unhandled handle=%d, period=%" PRId64 ", latency=%" PRId64,
+        ALOGV("queueBatch: unhandled handle=%d, period=%" PRId64 ", latency=%" PRId64,
                 handle, sampling_period_ns, max_report_latency_ns);
     }
 }
 
 void HubConnection::queueFlush(int handle)
 {
+    Mutex::Autolock autoLock(mLock);
+    queueFlushInternal(handle, false);
+}
+
+void HubConnection::queueFlushInternal(int handle, bool internal)
+{
     struct ConfigCmd cmd;
+    uint32_t primary;
     int ret;
 
-    Mutex::Autolock autoLock(mLock);
-
     if (isValidHandle(handle)) {
-        mSensorState[handle].flushCnt++;
+        // If no primary sensor type is specified,
+        // then 'handle' is the primary sensor type.
+        primary = mSensorState[handle].primary;
+        primary = (primary ? primary : handle);
+
+        std::list<Flush>& flushList = mFlushesPending[primary];
+
+        if (!flushList.empty() &&
+            flushList.back().internal == internal &&
+            flushList.back().handle == handle) {
+            ++flushList.back().count;
+        } else {
+            flushList.push_back((struct Flush){handle, 1, internal});
+        }
 
         initConfigCmd(&cmd, handle);
         cmd.cmd = CONFIG_CMD_FLUSH;
 
         ret = TEMP_FAILURE_RETRY(::write(mFd, &cmd, sizeof(cmd)));
         if (ret == sizeof(cmd)) {
-            ALOGI("queueFlush: sensor=%d, handle=%d",
+            ALOGV("queueFlush: sensor=%d, handle=%d",
                     cmd.sensorType, handle);
         } else {
-            ALOGE("queueFlush: failed to send command: sensor=%d, handle=%d"
+            ALOGW("queueFlush: failed to send command: sensor=%d, handle=%d"
                   " with error %s", cmd.sensorType, handle, strerror(errno));
         }
     } else {
-        ALOGI("queueFlush: unhandled handle=%d", handle);
+        ALOGV("queueFlush: unhandled handle=%d", handle);
     }
 }
 
@@ -1646,13 +1785,13 @@ void HubConnection::queueDataInternal(int handle, void *data, size_t length)
 
         ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + length));
         if (ret == sizeof(*cmd) + length)
-            ALOGI("queueData: sensor=%d, length=%zu",
+            ALOGV("queueData: sensor=%d, length=%zu",
                     cmd->sensorType, length);
         else
-            ALOGE("queueData: failed to send command: sensor=%d, length=%zu",
+            ALOGW("queueData: failed to send command: sensor=%d, length=%zu",
                     cmd->sensorType, length);
     } else {
-        ALOGI("queueData: unhandled handle=%d", handle);
+        ALOGV("queueData: unhandled handle=%d", handle);
     }
     free(cmd);
 }
@@ -1694,16 +1833,16 @@ void HubConnection::setOperationParameter(const additional_info_event_t &info) {
 void HubConnection::initNanohubLock() {
     // Create the lock directory (if it doesn't already exist)
     if (mkdir(NANOHUB_LOCK_DIR, NANOHUB_LOCK_DIR_PERMS) < 0 && errno != EEXIST) {
-        ALOGE("Couldn't create Nanohub lock directory: %s", strerror(errno));
+        ALOGW("Couldn't create Nanohub lock directory: %s", strerror(errno));
         return;
     }
 
     mInotifyPollIndex = -1;
     int inotifyFd = inotify_init1(IN_NONBLOCK);
     if (inotifyFd < 0) {
-        ALOGE("Couldn't initialize inotify: %s", strerror(errno));
+        ALOGW("Couldn't initialize inotify: %s", strerror(errno));
     } else if (inotify_add_watch(inotifyFd, NANOHUB_LOCK_DIR, IN_CREATE | IN_DELETE) < 0) {
-        ALOGE("Couldn't add inotify watch: %s", strerror(errno));
+        ALOGW("Couldn't add inotify watch: %s", strerror(errno));
         close(inotifyFd);
     } else {
         mPollFds[mNumPollFds].fd = inotifyFd;
@@ -1732,9 +1871,9 @@ void HubConnection::queueUsbMagBias()
 
         ret = TEMP_FAILURE_RETRY(::write(mFd, cmd, sizeof(*cmd) + sizeof(float)));
         if (ret == sizeof(*cmd) + sizeof(float))
-            ALOGI("queueUsbMagBias: bias=%f\n", mUsbMagBias);
+            ALOGV("queueUsbMagBias: bias=%f\n", mUsbMagBias);
         else
-            ALOGE("queueUsbMagBias: failed to send command: bias=%f\n", mUsbMagBias);
+            ALOGW("queueUsbMagBias: failed to send command: bias=%f\n", mUsbMagBias);
         free(cmd);
     }
 }
@@ -1748,7 +1887,7 @@ status_t HubConnection::initializeUinputNode()
     // Open uinput dev node
     mUinputFd = TEMP_FAILURE_RETRY(open("/dev/uinput", O_WRONLY | O_NONBLOCK));
     if (mUinputFd < 0) {
-        ALOGE("could not open uinput node: %s", strerror(errno));
+        ALOGW("could not open uinput node: %s", strerror(errno));
         return UNKNOWN_ERROR;
     }
 
@@ -1757,7 +1896,7 @@ status_t HubConnection::initializeUinputNode()
     ret |= TEMP_FAILURE_RETRY(ioctl(mUinputFd, UI_SET_EVBIT, EV_SYN));
     ret |= TEMP_FAILURE_RETRY(ioctl(mUinputFd, UI_SET_SWBIT, SW_LID));
     if (ret < 0) {
-        ALOGE("could not send ioctl to uinput node: %s", strerror(errno));
+        ALOGW("could not send ioctl to uinput node: %s", strerror(errno));
         return UNKNOWN_ERROR;
     }
 
@@ -1772,13 +1911,13 @@ status_t HubConnection::initializeUinputNode()
 
     ret = TEMP_FAILURE_RETRY(::write(mUinputFd, &uidev, sizeof(uidev)));
     if (ret < 0) {
-        ALOGE("write to uinput node failed: %s", strerror(errno));
+        ALOGW("write to uinput node failed: %s", strerror(errno));
         return UNKNOWN_ERROR;
     }
 
     ret = TEMP_FAILURE_RETRY(ioctl(mUinputFd, UI_DEV_CREATE));
     if (ret < 0) {
-        ALOGE("could not send ioctl to uinput node: %s", strerror(errno));
+        ALOGW("could not send ioctl to uinput node: %s", strerror(errno));
         return UNKNOWN_ERROR;
     }
 
@@ -1796,7 +1935,7 @@ void HubConnection::sendFolioEvent(int32_t data) {
     ev.value =  data;
     ret = TEMP_FAILURE_RETRY(::write(mUinputFd, &ev, sizeof(ev)));
     if (ret < 0) {
-        ALOGE("write to uinput node failed: %s", strerror(errno));
+        ALOGW("write to uinput node failed: %s", strerror(errno));
         return;
     }
 
@@ -1806,14 +1945,14 @@ void HubConnection::sendFolioEvent(int32_t data) {
     ev.value =  0;
     ret = TEMP_FAILURE_RETRY(::write(mUinputFd, &ev, sizeof(ev)));
     if (ret < 0) {
-        ALOGE("write to uinput node failed: %s", strerror(errno));
+        ALOGW("write to uinput node failed: %s", strerror(errno));
         return;
     }
 
     // Set lid state property
     if (property_set(LID_STATE_PROPERTY,
                      (data ? LID_STATE_CLOSED : LID_STATE_OPEN)) < 0) {
-        ALOGE("could not set lid_state property");
+        ALOGW("could not set lid_state property");
     }
 }
 #endif  // LID_STATE_REPORTING_ENABLED
@@ -1896,7 +2035,7 @@ int HubConnection::addDirectChannel(const struct sensors_direct_mem_t *mem) {
             mDirectChannel.insert(std::make_pair(ret, std::move(ch)));
         } else {
             ret = ch->getError();
-            ALOGE("Direct channel object(type:%d) has error %d upon init", mem->type, ret);
+            ALOGW("Direct channel object(type:%d) has error %d upon init", mem->type, ret);
         }
     }
 
@@ -1914,7 +2053,7 @@ int HubConnection::removeDirectChannel(int channel_handle) {
         std::stringstream ss;
         std::copy(activeSensorList.begin(), activeSensorList.end(),
                 std::ostream_iterator<int32_t>(ss, ","));
-        ALOGE("Removing channel %d when sensors (%s) are not stopped.",
+        ALOGW("Removing channel %d when sensors (%s) are not stopped.",
                 channel_handle, ss.str().c_str());
     }
 

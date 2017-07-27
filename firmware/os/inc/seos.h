@@ -270,13 +270,14 @@ bool osAppIsChre(uint16_t tid);
 
 /* Logging */
 enum LogLevel {
-    LOG_ERROR = 'E',
-    LOG_WARN  = 'W',
-    LOG_INFO  = 'I',
-    LOG_DEBUG = 'D',
+    LOG_ERROR   = 'E',
+    LOG_WARN    = 'W',
+    LOG_INFO    = 'I',
+    LOG_DEBUG   = 'D',
+    LOG_VERBOSE = 'V',
 };
 
-void osLogv(char clevel, const char *str, va_list vl);
+void osLogv(char clevel, uint32_t flags, const char *str, va_list vl);
 void osLog(enum LogLevel level, const char *str, ...) PRINTF_ATTRIBUTE(2, 3);
 
 #ifndef INTERNAL_APP_INIT

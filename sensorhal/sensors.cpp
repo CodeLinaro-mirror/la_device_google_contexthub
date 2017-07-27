@@ -15,7 +15,7 @@
  */
 
 #define LOG_TAG "sensors"
-// #defined LOG_NDEBUG  1
+#define LOG_NDEBUG  1
 #include <utils/Log.h>
 
 #include "hubconnection.h"
@@ -33,6 +33,10 @@
 #ifdef DYNAMIC_SENSOR_EXT_ENABLED
 #include <DynamicSensorManager.h>
 #include <SensorEventCallback.h>
+#endif
+
+#ifdef LEFTY_SERVICE_ENABLED
+#include "lefty_service.h"
 #endif
 
 using namespace android;
@@ -66,7 +70,7 @@ SensorContext::SensorContext(const struct hw_module_t *module)
 }
 
 int SensorContext::close() {
-    ALOGI("close");
+    ALOGV("close");
 
     delete this;
 
@@ -74,7 +78,7 @@ int SensorContext::close() {
 }
 
 int SensorContext::activate(int handle, int enabled) {
-    ALOGI("activate");
+    ALOGV("activate");
 
     for (auto &h : mOperationHandler) {
         if (h->owns(handle)) {
@@ -85,7 +89,7 @@ int SensorContext::activate(int handle, int enabled) {
 }
 
 int SensorContext::setDelay(int handle, int64_t delayNs) {
-    ALOGI("setDelay");
+    ALOGV("setDelay");
 
     for (auto &h: mOperationHandler) {
         if (h->owns(handle)) {
@@ -129,7 +133,7 @@ int SensorContext::batch(
         int handle,
         int64_t sampling_period_ns,
         int64_t max_report_latency_ns) {
-    ALOGI("batch");
+    ALOGV("batch");
 
     for (auto &h : mOperationHandler) {
         if (h->owns(handle)) {
@@ -140,7 +144,7 @@ int SensorContext::batch(
 }
 
 int SensorContext::flush(int handle) {
-    ALOGI("flush");
+    ALOGV("flush");
 
     for (auto &h : mOperationHandler) {
         if (h->owns(handle)) {
@@ -400,13 +404,16 @@ static int open_sensors(
         const struct hw_module_t *module,
         const char *,
         struct hw_device_t **dev) {
-    ALOGI("open_sensors");
+    ALOGV("open_sensors");
 
     SensorContext *ctx = new SensorContext(module);
     n_sensor = ctx->getSensorList(&sensor_list);
     gHubAlive = ctx->getHubAlive();
     *dev = &ctx->device.common;
 
+#ifdef LEFTY_SERVICE_ENABLED
+    register_lefty_service();
+#endif
     return 0;
 }
 
@@ -417,7 +424,7 @@ static struct hw_module_methods_t sensors_module_methods = {
 static int get_sensors_list(
         struct sensors_module_t *,
         struct sensor_t const **list) {
-    ALOGI("get_sensors_list");
+    ALOGV("get_sensors_list");
     if (gHubAlive && sensor_list != nullptr) {
         *list = sensor_list;
         return n_sensor;
@@ -428,7 +435,7 @@ static int get_sensors_list(
 }
 
 static int set_operation_mode(unsigned int mode) {
-    ALOGI("set_operation_mode");
+    ALOGV("set_operation_mode");
 
     // This is no-op because there is no sensor in the hal that system can
     // inject events. Only operation parameter injection is implemented, which
