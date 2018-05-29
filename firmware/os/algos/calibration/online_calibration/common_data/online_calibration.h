@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) 2018 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #ifndef LOCATION_LBS_CONTEXTHUB_NANOAPPS_CALIBRATION_ONLINE_CALIBRATION_COMMON_DATA_ONLINE_CALIBRATION_H_
 #define LOCATION_LBS_CONTEXTHUB_NANOAPPS_CALIBRATION_ONLINE_CALIBRATION_COMMON_DATA_ONLINE_CALIBRATION_H_
 
@@ -73,17 +89,6 @@ class OnlineCalibration {
   void SetCalibrationCallback(
       CallbackInterface<CalibrationType>* calibration_callback) {
     calibration_callback_ = calibration_callback;
-  }
-
-  // This provides operational feedback to the system based on status such as
-  // active sensors and sampling rates. Feedback may include adjusting
-  // system-level settings including sensor sampling rate, latency,
-  // active/passive subscription, etc. Returns "true" if a system setting is
-  // requested to change.
-  // TODO(davejacobs) -- Determine implementation details.
-  virtual bool UpdateDynamicSystemSettings(
-      /*System Parameters In, System Feedback Out*/) const {
-    return false;
   }
 
   // Returns the sensor-type this calibration algorithm provides updates for.
